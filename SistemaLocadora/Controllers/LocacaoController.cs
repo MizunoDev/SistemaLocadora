@@ -65,22 +65,16 @@ namespace SistemaLocadora.Controllers
             //Regra 7 - Deve haver como agendar um veículo (ex: quero locar o veículo tal pra daqui a 30 dias)
 
 
-            var existeConflito = await _context.Locacoes.AnyAsync(b =>
-                // “Para cada locação b que já existe no banco de dados, verifique se”
+            var existeConflito = await _locacaoService
+                .ExisteConflitoDeLocacaoAsync(
+                //Qual veículo o cliente quer alugar
+                dto.VeiculoId,
+                //Quando a locação começa
+                dto.DataInicio,
+                //Quando termina
+                dto.DataFim
 
-                b.VeiculoId == dto.VeiculoId &&
-                // “O VeiculoId da locação do banco é IGUAL ao VeiculoId digitado pelo usuário”
-
-                b.Ativo &&
-                // “A locação do banco ainda está ativa (true)”
-
-                dto.DataInicio < b.DataFim &&
-                // “A nova locação começa ANTES da locação do banco terminar?”
-
-                dto.DataFim > b.DataInicio
-            // “A nova locação termina DEPOIS da locação do banco começar?”
             );
-
 
             if (existeConflito)
             {
@@ -167,8 +161,6 @@ namespace SistemaLocadora.Controllers
 
             return CreatedAtAction(nameof(Create), new { id = locacao.Id }, null);
         }
-
-
 
         //Regra 4 Após a locação feita o cliente pode renovar a locação até 3x desde que não ultrapasse o total de 30 dias
 
