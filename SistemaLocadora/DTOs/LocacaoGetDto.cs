@@ -13,7 +13,7 @@
         public DateOnly DataInicio { get; set; }
         public DateOnly DataFim { get; set; }
 
-        public DateOnly? DataDevolucaoReal { get; set; }
+        public DateOnly? DataDevolucaoReal { get; set; } // ? pode retornar null
 
         public decimal multa { get; set; }
         public decimal ValorTotal { get; set; }

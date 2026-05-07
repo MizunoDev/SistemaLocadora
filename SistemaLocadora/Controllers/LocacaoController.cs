@@ -1,148 +1,111 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SistemaLocadora.Data;
 using SistemaLocadora.DTOs;
+using SistemaLocadora.Enums;
 using SistemaLocadora.Models;
 using SistemaLocadora.Services;
-using System.Text.RegularExpressions;
 
 namespace SistemaLocadora.Controllers
 {
     [Route("api/[controller]")]
+    [ApiController]
     public class LocacaoController : ControllerBase
     {
-
-
         private readonly AppDbContext _context;
         private readonly LocacaoService _locacaoService;
 
-        public LocacaoController(AppDbContext context, LocacaoService locacaoService)
+        public LocacaoController(
+            AppDbContext context,
+            LocacaoService locacaoService)
         {
             _context = context;
             _locacaoService = locacaoService;
         }
 
-
+        // Criar Locação 
 
         [HttpPost]
         public async Task<ActionResult> Create(LocacaoCreateDto dto)
         {
 
-            //Validação pra saber se o cliente existe 
-            var clienteExiste = await _context.Clientes.AnyAsync(
-                    b => b.Id == dto.ClienteId);
+            var clienteExiste = await _context.Clientes
+                .AnyAsync(c => c.Id == dto.ClienteId);
 
             if (!clienteExiste)
-            {
                 return BadRequest("Cliente não encontrado");
 
-            }
 
-            //Valida pra saber se o veículo existe
-
-            var veiculoExiste = await _context.Veiculos.AnyAsync( // AnyAsync -> retorna um bool ( V F )
-                v => v.Id == dto.VeiculoId);
+            var veiculoExiste = await _context.Veiculos
+                .AnyAsync(v => v.Id == dto.VeiculoId);
 
             if (!veiculoExiste)
-            {
                 return BadRequest("Veículo não encontrado");
+
+            // Regra 5 -> O pagamento antecipado é obrigatório para criar a locação
+            if (!_locacaoService.PagamentoValido(
+                dto.PagamentoConfirmado))
+            {
+                return BadRequest(
+                    "O pagamento deve ser confirmado");
             }
 
-            //Se pagamentoConfirmado == false
-            //Regra 5 - O pagamento é antecipado
-            if (!dto.PagamentoConfirmado)
-                return BadRequest("O pagamento deve ser confirmado antes de criar a locação");
-
-
+            // Validação básica: a data de início precisa ser anterior à data final
             if (dto.DataInicio >= dto.DataFim)
             {
-                return BadRequest("A data de início deve ser anterior à data de fim");
+                return BadRequest(
+                    "A data de início deve ser menor que a data fim"); 
             }
 
+            // Regra 7 -> Agendar veículo
 
-            //Regra 1 - Cada veículo pode estar locado para um cliente por vez/dia
-            //Regra 7 - Deve haver como agendar um veículo (ex: quero locar o veículo tal pra daqui a 30 dias)
+            if (!_locacaoService
+                .DataAgendamentoValida(dto.DataInicio))
+            {
+                return BadRequest(
+                    "Não é permitido criar locações no passado"); 
+            }
 
+            // Regra 1 -> Conflito de locação
 
-            var existeConflito = await _locacaoService
+            var conflito = await _locacaoService
                 .ExisteConflitoDeLocacaoAsync(
-                //Qual veículo o cliente quer alugar
-                dto.VeiculoId,
-                //Quando a locação começa
-                dto.DataInicio,
-                //Quando termina
-                dto.DataFim
+                    dto.VeiculoId,
+                    dto.DataInicio,
+                    dto.DataFim);
 
-            );
-
-            if (existeConflito)
+            if (conflito)
             {
-                return BadRequest("Este veículo já está locado nesse perído");
+                return BadRequest(
+                    "Este veículo já está locado nesse período"); //Post/api/Locacao
             }
 
-            var veiculo = await _context.Veiculos
-                    .Include(v => v.CategoriaVeiculo)
-                    .FirstOrDefaultAsync(v => v.Id == dto.VeiculoId);
+            // Regra 2 -> Intervalo entre Locações
+            //O Veículo só pode ser locado após o período de limpeza/manutenção
+            //que varia de acordo com a categoria:
+            //Economico -> 1 dia
+            //SUV       -> 2 dias
+            //Luxo      -> 3 dias
 
-            if (veiculo == null)
+            var respeitaIntervalo = await _locacaoService
+                .RespeitaIntervaloMinimoAsync(
+                    dto.VeiculoId,
+                    dto.DataInicio);
+
+            if (!respeitaIntervalo)
             {
-                return NotFound("Veículo não encontrado");
-            }
-
-            //Regra 2 - Deve haver um intervalo de um dia entre a entrega do veículo e a próxima locação
-            //Regra 7 - Deve haver como agendar um veículo (ex: quero locar o veículo tal pra daqui a 30 dias)
-
-            var ultimaLocacao = await _context.Locacoes
-                .Where(b =>
-                    b.VeiculoId == dto.VeiculoId &&
-                    (b.Ativo || b.DataDevolucaoReal != null) // ✅ ignora canceladas
-                )
-                .OrderByDescending(b => b.DataDevolucaoReal ?? b.DataFim)
-                .FirstOrDefaultAsync();
-
-            if (ultimaLocacao != null)
-            {
-
-                var diasIntervalo = veiculo.CategoriaVeiculo.IntervaloMinimoDias;
-                var dataMinima = ultimaLocacao.DataFim.AddDays(diasIntervalo);
-
-                if (dto.DataInicio < dataMinima)
-                {
-                    return BadRequest($"Este veículo só pode ser locado a partir de {dataMinima:yyyy-MM-dd}");
-                }
-            }
-
-            // Regra 3 - O preço da locação dos veículos pode variar de acordo com o dia (feriado e final de semana
-            // a diária é mais cara)
-
-            decimal valorTotal = 0;
-
-            for (var data = dto.DataInicio; data < dto.DataFim; data = data.AddDays(1))
-            {
-                if (data.DayOfWeek == DayOfWeek.Saturday ||
-                   data.DayOfWeek == DayOfWeek.Sunday)
-                {
-                    valorTotal += veiculo.CategoriaVeiculo.ValorFinalSemana;
-                }
-                else
-                {
-                    valorTotal += veiculo.CategoriaVeiculo.ValorDiaSemana;
-                }
-            }
-
-            //--------------------------//
-
-            //Regra 4 parte 2 - não ultrapasse o total de 30 dias durante a primeira locação:
-
-            var totalDias = dto.DataFim.DayNumber - dto.DataInicio.DayNumber;
-            if (totalDias > 30)
-            {
-                return BadRequest("A locação não pode ultrapassar 30 dias");
-            }
+                return BadRequest(
+                    "O veículo ainda está no período de limpeza/manutenção"); 
+            }                                                                                                                                   
 
 
-            //-------------------------//
+            // Regra 3 -> Valor da Locação
+
+            var valorTotal = await _locacaoService
+                .CalcularValorLocacaoAsync(
+                    dto.VeiculoId,
+                    dto.DataInicio,
+                    dto.DataFim);
 
             var locacao = new Locacao
             {
@@ -151,141 +114,127 @@ namespace SistemaLocadora.Controllers
                 DataInicio = dto.DataInicio,
                 DataFim = dto.DataFim,
                 ValorTotal = valorTotal,
-                Ativo = true,
                 QuantidadeRenovacoes = 0,
                 Multa = 0,
+                Ativo = true
             };
 
             _context.Locacoes.Add(locacao);
+
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(Create), new { id = locacao.Id }, null);
+            return CreatedAtAction(
+                nameof(GetById),
+                new { id = locacao.Id },
+                null);
         }
 
-        //Regra 4 Após a locação feita o cliente pode renovar a locação até 3x desde que não ultrapasse o total de 30 dias
+        // Renovar
 
         [HttpPost("{id}/renovar")]
-        public async Task<ActionResult> Renovar(int id, LocacaoRenovarDto dto)
+        public async Task<ActionResult> Renovar(
+            int id,
+            LocacaoRenovarDto dto)
         {
-
             var locacao = await _context.Locacoes
-                .FirstOrDefaultAsync(b => b.Id == id);
+                .FirstOrDefaultAsync(l => l.Id == id);
 
             if (locacao == null)
-            {
                 return NotFound("Locação não encontrada");
-            }
 
-            if (!locacao.Ativo)
+            // Regra 4
+
+            var erro = _locacaoService
+                .ValidarRenovacao(
+                    locacao,
+                    dto.NovaDataFim);
+
+            if (erro != null)
+                return BadRequest(erro);
+
+            // Conflito -> Regra 1
+
+            var conflito = await _locacaoService
+                .ExisteConflitoDeLocacaoAsync(
+                    locacao.VeiculoId,
+                    locacao.DataFim,
+                    dto.NovaDataFim,
+                    locacao.Id);
+
+            if (conflito)
             {
-                return BadRequest("Não é possível renovar uma locação já finalizada");
+                return BadRequest(
+                    "Já existe outra locação agendada");
             }
 
-            if (locacao.QuantidadeRenovacoes >= 3)
-            {
-                return BadRequest("Limite máximo de renovações atingidas. Máximo permitido: 3");
-            }
+            // Valor adicional
 
-            var totalDias = dto.NovaDataFim.DayNumber - locacao.DataInicio.DayNumber;
-            if (totalDias > 30)
-            {
-                return BadRequest("A locação não pode ultrapassar 30 dias");
-            }
+            var valorAdicional =
+                await _locacaoService
+                    .CalcularValorLocacaoAsync(
+                        locacao.VeiculoId,
+                        locacao.DataFim,
+                        dto.NovaDataFim);
 
-            var veiculo = await _context.Veiculos
-                .Include(v => v.CategoriaVeiculo)
-                .FirstAsync(v => v.Id == locacao.VeiculoId);
-
-
-            // Guarda a data antiga
-            var dataFimAntiga = locacao.DataFim;
-
-            // Calcula o valor adicional
-            decimal valorAdicional = 0;
-
-            for (var data = dataFimAntiga; data < dto.NovaDataFim; data = data.AddDays(1))
-            {
-                if (data.DayOfWeek == DayOfWeek.Saturday ||
-                    data.DayOfWeek == DayOfWeek.Sunday)
-                {
-                    valorAdicional += veiculo.CategoriaVeiculo.ValorFinalSemana;
-                }
-                else
-                {
-                    valorAdicional += veiculo.CategoriaVeiculo.ValorDiaSemana;
-                }
-            }
-
-            //-----------------------------------------------------------------//
-
-            //Atualiza valores
-            locacao.ValorTotal += valorAdicional;
             locacao.DataFim = dto.NovaDataFim;
             locacao.QuantidadeRenovacoes++;
+            locacao.ValorTotal += valorAdicional;
 
             await _context.SaveChangesAsync();
 
             return Ok();
         }
 
-        //Regra 6 Caso o veículo seja entregue com atraso, uma multa será cobrada de acordo com o tipo de veículo e uma multa diária
+        // Finalizar
 
         [HttpPost("{id}/finalizar")]
         public async Task<ActionResult> Finalizar(int id)
         {
             var locacao = await _context.Locacoes
-                .FirstOrDefaultAsync(b => b.Id == id);
+                .FirstOrDefaultAsync(l => l.Id == id);
 
             if (locacao == null)
-                return NotFound("Locacão não encontrada");
+                return NotFound("Locação não encontrada");
 
             if (!locacao.Ativo)
-                return BadRequest("Locação já finalizada");
+            {
+                return BadRequest(
+                    "Locação já finalizada");
+            }
 
-            var hoje = DateOnly.FromDateTime(DateTime.Today);
+            var hoje =
+                DateOnly.FromDateTime(DateTime.Today);
 
             if (locacao.DataInicio > hoje)
             {
-                return BadRequest("Não é possível finalizar uma locação que ainda não foi iniciada.");
+                return BadRequest(
+                    "Não é possível finalizar uma locação agendada");
             }
 
-            var dataDevolucao = DateOnly.FromDateTime(DateTime.Today);
-            locacao.DataDevolucaoReal = dataDevolucao;
+            locacao.DataDevolucaoReal = hoje;
 
-            decimal multa = 0;
+            // REGRA 6
+            // MULTA
 
-            if (dataDevolucao > locacao.DataFim)
-            {
-                var veiculo = await _context.Veiculos
-                    .Include(b => b.CategoriaVeiculo)
-                    .FirstAsync(b => b.Id == locacao.VeiculoId);
-
-                for (var data = locacao.DataFim; data < dataDevolucao; data = data.AddDays(1))
-                {
-                    if (data.DayOfWeek == DayOfWeek.Saturday ||
-                        data.DayOfWeek == DayOfWeek.Sunday)
-                    {
-                        multa += veiculo.CategoriaVeiculo.ValorFinalSemana * 1.2m; // Valor da diária + 20% multa de atraso
-                    }
-                    else
-                    {
-                        multa += veiculo.CategoriaVeiculo.ValorDiaSemana * 1.2m;
-                    }
-                }
-            }
+            var multa = await _locacaoService
+                .CalcularMultaAsync(
+                    locacao,
+                    hoje);
 
             locacao.Multa = multa;
             locacao.Ativo = false;
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { Multa = multa });
-
+            return Ok(new
+            {
+                Multa = multa
+            });
         }
 
+        // Cancelar -> api/Locacao/{id}/cancelar
 
         [HttpPost("{id}/cancelar")]
-
         public async Task<ActionResult> Cancelar(int id)
         {
             var locacao = await _context.Locacoes
@@ -295,98 +244,105 @@ namespace SistemaLocadora.Controllers
                 return NotFound("Locação não encontrada");
 
             if (!locacao.Ativo)
-                return BadRequest("Essa locação já está finalizada");
+            {
+                return BadRequest(
+                    "Essa locação já está finalizada");
+            }
 
-            var hoje = DateOnly.FromDateTime(DateTime.Today);
+            var hoje =
+                DateOnly.FromDateTime(DateTime.Today);
 
             if (locacao.DataInicio <= hoje)
-                return BadRequest("Não é possível iniciar uma locação que já iniciou");
+            {
+                return BadRequest(
+                    "Não é possível cancelar uma locação já iniciada");
+            }
 
             locacao.Ativo = false;
 
             await _context.SaveChangesAsync();
+
             return Ok();
         }
 
+
+        // Listar todos -> Locacao
+        //Lista locações com filtros opcionais e calcula status dinamicamente
         [HttpGet]
         public async Task<ActionResult<IEnumerable<LocacaoGetDto>>> GetAll(
-                StatusLocacaoFiltro? status = null,
-                int? clienteId = null,
-                int? veiculoId = null)
+            StatusLocacaoFiltro? status = null,
+            int? clienteId = null,
+            int? veiculoId = null)
         {
-            var hoje = DateOnly.FromDateTime(DateTime.Today);
+            //Data atual usada para calcular o status da locação
+            var hoje =
+                DateOnly.FromDateTime(DateTime.Today);
 
             var query = _context.Locacoes
                 .Include(l => l.Cliente)
                 .AsQueryable();
 
+            //Filtros opcionais aplicados apenas se informados
             if (clienteId.HasValue)
-                query = query.Where(l => l.ClienteId == clienteId.Value);
-
-            if (veiculoId.HasValue)
-                query = query.Where(l => l.VeiculoId == veiculoId.Value);
-
-            var locacoes = await query
-                .OrderByDescending(l => l.DataInicio)
-                .Select(l => new
-                {
-                    Locacao = l,
-                    Dto = new LocacaoGetDto
-                    {
-                        Id = l.Id,
-                        ClienteId = l.ClienteId,
-                        ClienteNome = l.Cliente.Nome,
-                        VeiculoId = l.VeiculoId,
-                        DataInicio = l.DataInicio,
-                        DataFim = l.DataFim,
-                        DataDevolucaoReal = l.DataDevolucaoReal,
-                        ValorTotal = l.ValorTotal,
-                        multa = l.Multa
-                    }
-                })
-                .ToListAsync();
-
-            foreach (var item in locacoes)
             {
-                item.Dto.Status = _locacaoService.CalcularStatus(item.Locacao, hoje);
+                query = query
+                    .Where(l => l.ClienteId == clienteId.Value);
             }
 
-            var resultado = locacoes.Select(x => x.Dto).ToList();
+            if (veiculoId.HasValue)
+            {
+                query = query
+                    .Where(l => l.VeiculoId == veiculoId.Value);
+            }
+            
+            var locacoes = await query
+                .OrderByDescending(l => l.DataInicio)
+                .ToListAsync();
 
+            //O Status não é salvo no banco. É calculado dinamicamente
+            var resultado = locacoes
+                .Select(l => new LocacaoGetDto
+                {
+                    Id = l.Id,
+                    ClienteId = l.ClienteId,
+                    ClienteNome = l.Cliente.Nome,
+                    VeiculoId = l.VeiculoId,
+                    DataInicio = l.DataInicio,
+                    DataFim = l.DataFim,
+                    DataDevolucaoReal = l.DataDevolucaoReal,
+                    multa = l.Multa,
+                    ValorTotal = l.ValorTotal,
+                    Status = _locacaoService
+                        .CalcularStatus(l, hoje)
+                })
+                .ToList();
+
+            //Filtro por status ocorre após o mapeamento,
+            //pos o status é calculado no service
             if (status.HasValue)
             {
                 resultado = resultado
-                    .Where(d => d.Status == status.Value)
+                    .Where(l => l.Status == status.Value)
                     .ToList();
             }
 
             return Ok(resultado);
         }
 
-        [HttpGet]
-        [Route("{id}")]
+        // Buscar por ID -> Locacao
 
+        [HttpGet("{id}")]
         public async Task<ActionResult<LocacaoGetDto>> GetById(int id)
         {
-            var hoje = DateOnly.FromDateTime(DateTime.Today);
+            var hoje =
+                DateOnly.FromDateTime(DateTime.Today);
 
             var locacao = await _context.Locacoes
                 .Include(l => l.Cliente)
-                .Include(l => l.Veiculo)
                 .FirstOrDefaultAsync(l => l.Id == id);
 
             if (locacao == null)
                 return NotFound();
-
-            var status =
-                    !locacao.Ativo && locacao.DataDevolucaoReal == null
-                        ? StatusLocacaoFiltro.Cancelada
-                    : !locacao.Ativo && locacao.DataDevolucaoReal != null
-                        ? StatusLocacaoFiltro.Finalizada
-                    : locacao.Ativo && locacao.DataInicio > hoje
-                        ? StatusLocacaoFiltro.Agendada
-                    : StatusLocacaoFiltro.Andamento;
-
 
             var dto = new LocacaoGetDto
             {
@@ -399,13 +355,11 @@ namespace SistemaLocadora.Controllers
                 DataDevolucaoReal = locacao.DataDevolucaoReal,
                 multa = locacao.Multa,
                 ValorTotal = locacao.ValorTotal,
-                Status = _locacaoService.CalcularStatus(locacao, hoje)
+                Status = _locacaoService
+                    .CalcularStatus(locacao, hoje)
             };
-
 
             return Ok(dto);
         }
-
-
     }
 }
