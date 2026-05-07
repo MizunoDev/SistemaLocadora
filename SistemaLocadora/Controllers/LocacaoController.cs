@@ -239,7 +239,7 @@ namespace SistemaLocadora.Controllers
         {
             var locacao = await _context.Locacoes
                 .FirstOrDefaultAsync(l => l.Id == id);
-
+            
             if (locacao == null)
                 return NotFound("Locação não encontrada");
 

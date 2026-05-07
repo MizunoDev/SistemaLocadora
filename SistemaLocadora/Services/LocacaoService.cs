@@ -110,7 +110,7 @@ namespace SistemaLocadora.Services
                 .Include(v => v.CategoriaVeiculo)
                 .FirstAsync(v => v.Id == locacao.VeiculoId);
 
-            decimal multa = 250; // multa fixa -> 250,00R$ + 150% do valor da diária por dia
+            decimal multa = veiculo.CategoriaVeiculo.ValorDiaSemana * 0.5m;
 
             // Calculo da multa 
             // O cálculo começa a partir do dia seguinte ao término da locação
