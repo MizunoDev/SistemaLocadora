@@ -69,7 +69,7 @@ namespace SistemaLocadora.Services
             for (var data = dataInicio; data < dataFim; data = data.AddDays(1))
             {
                 bool fimDeSemana = data.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
-                valorTotal += fimDeSemana
+                valorTotal += fimDeSemana //Ternário
                     ? veiculo.CategoriaVeiculo.ValorFinalSemana
                     : veiculo.CategoriaVeiculo.ValorDiaSemana;
             }
@@ -104,7 +104,7 @@ namespace SistemaLocadora.Services
         //Regra 6 -> Multa
         public async Task<decimal> CalcularMultaAsync(Locacao locacao, DateOnly dataDevolucao)
         {
-            if (dataDevolucao <= locacao.DataFim) return 0;
+            if (dataDevolucao <= locacao.DataFim) return 0; //Sem multa
 
             var veiculo = await _context.Veiculos
                 .Include(v => v.CategoriaVeiculo)

@@ -18,7 +18,7 @@
         public decimal multa { get; set; }
         public decimal ValorTotal { get; set; }
 
-        public StatusLocacaoFiltro Status { get; set; }
+        public StatusLocacaoFiltro Status { get; set; } //enum
 
     }
 }

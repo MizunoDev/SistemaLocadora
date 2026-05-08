@@ -66,7 +66,7 @@ namespace SistemaLocadora.Controllers
                     "Não é permitido criar locações no passado"); 
             }
 
-            // Regra 1 -> Conflito de locação
+            // Regra 1 -> Conflito de locação // Criando a locação
 
             var conflito = await _locacaoService
                 .ExisteConflitoDeLocacaoAsync(

@@ -12,7 +12,7 @@ namespace SistemaLocadora.Models
         public string Marca { get; set; } = string.Empty;
         public string Modelo { get; set; } = string.Empty;
         public int AnoFabricacao { get; set; }
-        public SituacaoVeiculo Situacao { get; set; } 
+        public SituacaoVeiculo Situacao { get; set; } //enum
         public string UfRegistro { get; set; } = string.Empty;
         public int CategoriaVeiculoId { get; set; }
         public CategoriaVeiculo CategoriaVeiculo { get; set; } = null!;
